@@ -1,0 +1,40 @@
+fastapi==0.115.6
+uvicorn==0.32.1
+pydantic==2.5.0
+pydantic-settings==2.1.0
+python-dotenv==1.0.0
+python-multipart==0.0.6
+ 
+# Microsoft Graph API
+msal==1.24.0
+
+# Admin login sessions
+PyJWT==2.14.0
+ 
+#Document Extraction 
+pymupdf==1.23.8
+pdfplumber==0.10.3
+pytesseract==0.3.10
+Pillow==10.1.0
+beautifulsoup4==4.12.3
+ 
+# Excel Files
+openpyxl==3.1.2
+pandas==2.1.4
+ 
+# PostgreSQL 
+psycopg[binary]==3.3.0
+psycopg-pool==3.2.6
+ 
+# Word document processing
+python-docx==1.1.0
+ 
+# File handling
+python-magic==0.4.27
+ 
+# Utilities
+python-dateutil==2.8.2
+requests==2.31.0
+ 
+# Gemini 
+google-genai==1.15.0

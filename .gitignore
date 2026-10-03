@@ -1,0 +1,32 @@
+# Environment variables
+.env
+
+# Credentials
+credentials/
+*.json
+!*.json.example
+
+# Python
+__pycache__/
+.venv/
+venv/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+
+# Project specific
+temp/
+logs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
