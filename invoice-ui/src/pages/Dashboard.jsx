@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { FileText, CheckCircle2, PauseCircle, ShieldAlert, ListChecks, Loader2 } from 'lucide-react'
+import { FileText, CheckCircle2, PauseCircle, ShieldAlert, ListChecks, Loader2, RefreshCw } from 'lucide-react'
 import { getInvoices, getInvoicesNeedingValidation, getSyncStatus } from '../api/client'
+import NotificationBell from '../components/NotificationBell'
 
 const STATUS_POLL_MS = 15000
 
@@ -87,8 +88,11 @@ export default function Dashboard() {
   return (
     <div className="page-fade-in">
       <div className="page-header">
-        <h1>Dashboard</h1>
-        <p>Welcome to Invoice Automation</p>
+        <div>
+          <h1>Dashboard</h1>
+          <p>Welcome to Invoice Automation</p>
+        </div>
+        <NotificationBell />
       </div>
 
       <div className={'status-banner' + (isPaused ? ' paused' : '')}>
@@ -117,9 +121,19 @@ export default function Dashboard() {
         <div className="card" style={{ flex: 1 }}>
           <div className="card-header">
             <h2>Recent Invoices</h2>
-            <a className="link-muted" href="/invoices" onClick={(e) => { e.preventDefault(); navigate('/invoices') }}>
-              View all &rsaquo;
-            </a>
+            <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+              <button
+                className="icon-btn"
+                onClick={loadInvoices}
+                disabled={invoicesLoading}
+                title="Refresh invoices"
+              >
+                <RefreshCw size={16} className={invoicesLoading ? 'spin' : ''} />
+              </button>
+              <a className="link-muted" href="/invoices" onClick={(e) => { e.preventDefault(); navigate('/invoices') }}>
+                View all &rsaquo;
+              </a>
+            </div>
           </div>
 
           {invoicesLoading && <div className="loading-state"><Loader2 size={18} className="spin" />Loading invoices...</div>}

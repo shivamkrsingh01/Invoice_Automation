@@ -38,3 +38,7 @@ requests==2.31.0
  
 # Gemini 
 google-genai==1.15.0
+
+# Report Generation
+reportlab==4.0.7
+xlsxwriter==3.1.9

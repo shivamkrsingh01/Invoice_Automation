@@ -87,3 +87,76 @@ export function askQuestion(question) {
     body: JSON.stringify({ question }),
   })
 }
+
+// ---------- Notifications ----------
+
+export function getNotifications({ limit = 20, offset = 0, severity = '', type = '', unreadOnly = false } = {}) {
+  const params = new URLSearchParams({ limit, offset })
+  if (severity) params.set('severity', severity)
+  if (type) params.set('type', type)
+  if (unreadOnly) params.set('unread_only', 'true')
+  return request(`/api/notifications?${params}`)
+}
+
+export function getUnreadCount() {
+  return request('/api/notifications/unread-count')
+}
+
+export function markNotificationRead(id) {
+  return request(`/api/notifications/${id}/read`, { method: 'POST' })
+}
+
+export function markAllNotificationsRead() {
+  return request('/api/notifications/read-all', { method: 'POST' })
+}
+
+// ---------- Reports ----------
+
+export function generateReportData({ period, start_date, end_date }) {
+  return request('/api/reports/data', {
+    method: 'POST',
+    body: JSON.stringify({ period, start_date, end_date }),
+  })
+}
+
+export function downloadPdf({ period, start_date, end_date }) {
+  return fetch('/api/reports/pdf', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify({ period, start_date, end_date }),
+  }).then(res => {
+    if (!res.ok) throw new Error(`PDF download failed: ${res.statusText}`)
+    return res.blob()
+  }).then(blob => {
+    const url = window.URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `invoice_report_${period}.pdf`
+    document.body.appendChild(a)
+    a.click()
+    window.URL.revokeObjectURL(url)
+    document.body.removeChild(a)
+  })
+}
+
+export function downloadExcel({ period, start_date, end_date }) {
+  return fetch('/api/reports/excel', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify({ period, start_date, end_date }),
+  }).then(res => {
+    if (!res.ok) throw new Error(`Excel download failed: ${res.statusText}`)
+    return res.blob()
+  }).then(blob => {
+    const url = window.URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `invoice_report_${period}.xlsx`
+    document.body.appendChild(a)
+    a.click()
+    window.URL.revokeObjectURL(url)
+    document.body.removeChild(a)
+  })
+}

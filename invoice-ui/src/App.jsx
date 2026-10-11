@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
-import { FileText, Home, FileCheck2, MessageCircle, User, Play, Square, LogOut } from 'lucide-react'
+import { FileText, Home, FileCheck2, MessageCircle, User, Play, Square, LogOut, Bell, BarChart3 } from 'lucide-react'
 import { getSyncStatus, stopSync, resumeSync, logout } from './api/client'
 
 const NAV_ITEMS = [
@@ -8,6 +8,8 @@ const NAV_ITEMS = [
   { to: '/invoices', label: 'Invoices', icon: FileText },
   { to: '/validation', label: 'Validation', icon: FileCheck2 },
   { to: '/qa', label: 'Q&A', icon: MessageCircle },
+  { to: '/reports', label: 'Reports', icon: BarChart3 },
+  { to: '/notifications', label: 'Notifications', icon: Bell },
 ]
 
 export default function App() {
