@@ -72,9 +72,13 @@ class ReportService:
         end_date: date
     ) -> Dict[str, Any]:
         """Calculate executive summary metrics."""
+        # Convert dates to datetime for proper timestamp comparison
+        start_datetime = datetime.combine(start_date, datetime.min.time())
+        end_datetime = datetime.combine(end_date, datetime.max.time())
+
         cur.execute(
             """
-            SELECT 
+            SELECT
                 COUNT(*) as total_invoices,
                 COALESCE(SUM(invoice_amount), 0) as total_invoice_amount,
                 COALESCE(SUM(payment_done), 0) as total_payment_amount,
@@ -83,7 +87,7 @@ class ReportService:
             FROM invoices
             WHERE created_at >= %s AND created_at <= %s
             """,
-            (start_date, end_date)
+            (start_datetime, end_datetime)
         )
         row = cur.fetchone()
         
@@ -103,9 +107,13 @@ class ReportService:
         limit: int
     ) -> List[Dict[str, Any]]:
         """Fetch detailed invoice records."""
+        # Convert dates to datetime for proper timestamp comparison
+        start_datetime = datetime.combine(start_date, datetime.min.time())
+        end_datetime = datetime.combine(end_date, datetime.max.time())
+
         cur.execute(
             """
-            SELECT 
+            SELECT
                 id, utr_no, invoice_number, invoice_date, invoice_amount,
                 total_payment, total_net_payment, payment_done, vendor_name,
                 source, created_at
@@ -114,7 +122,7 @@ class ReportService:
             ORDER BY created_at DESC
             LIMIT %s
             """,
-            (start_date, end_date, limit)
+            (start_datetime, end_datetime, limit)
         )
         
         columns = [
@@ -145,23 +153,27 @@ class ReportService:
         end_date: date
     ) -> Dict[str, int]:
         """Analyze missing fields in invoices."""
+        # Convert dates to datetime for proper timestamp comparison
+        start_datetime = datetime.combine(start_date, datetime.min.time())
+        end_datetime = datetime.combine(end_date, datetime.max.time())
+
         total_invoices = 0
         cur.execute(
             "SELECT COUNT(*) FROM invoices WHERE created_at >= %s AND created_at <= %s",
-            (start_date, end_date)
+            (start_datetime, end_datetime)
         )
         total_invoices = cur.fetchone()[0]
-        
+
         if total_invoices == 0:
             return {}
-        
+
         fields = ["invoice_number", "invoice_amount", "vendor_name", "invoice_date"]
         missing = {}
-        
+
         for field in fields:
             cur.execute(
                 f"SELECT COUNT(*) FROM invoices WHERE {field} IS NULL AND created_at >= %s AND created_at <= %s",
-                (start_date, end_date)
+                (start_datetime, end_datetime)
             )
             missing[field] = cur.fetchone()[0]
         
@@ -174,9 +186,13 @@ class ReportService:
         end_date: date
     ) -> List[Dict[str, Any]]:
         """Get invoice count and amount by vendor (top 10)."""
+        # Convert dates to datetime for proper timestamp comparison
+        start_datetime = datetime.combine(start_date, datetime.min.time())
+        end_datetime = datetime.combine(end_date, datetime.max.time())
+
         cur.execute(
             """
-            SELECT 
+            SELECT
                 vendor_name,
                 COUNT(*) as invoice_count,
                 COALESCE(SUM(invoice_amount), 0) as total_amount
@@ -186,7 +202,7 @@ class ReportService:
             ORDER BY invoice_count DESC
             LIMIT 10
             """,
-            (start_date, end_date)
+            (start_datetime, end_datetime)
         )
         
         rows = []
@@ -206,10 +222,14 @@ class ReportService:
         end_date: date
     ) -> Dict[str, List[Dict[str, Any]]]:
         """Get daily and weekly trends."""
+        # Convert dates to datetime for proper timestamp comparison
+        start_datetime = datetime.combine(start_date, datetime.min.time())
+        end_datetime = datetime.combine(end_date, datetime.max.time())
+
         # Daily trends
         cur.execute(
             """
-            SELECT 
+            SELECT
                 DATE(created_at) as date,
                 COUNT(*) as invoice_count,
                 COALESCE(SUM(invoice_amount), 0) as total_amount
@@ -218,7 +238,7 @@ class ReportService:
             GROUP BY DATE(created_at)
             ORDER BY date ASC
             """,
-            (start_date, end_date)
+            (start_datetime, end_datetime)
         )
         
         daily_trends = []
@@ -237,7 +257,7 @@ class ReportService:
         self,
         report_data: Dict[str, Any]
     ) -> BytesIO:
-        """Generate a professional, compact PDF report from report data."""
+        """Generate a detailed, professional PDF report from report data."""
         from reportlab.lib import colors
         from reportlab.lib.pagesizes import letter
         from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -249,193 +269,212 @@ class ReportService:
         doc = SimpleDocTemplate(
             buffer,
             pagesize=letter,
-            rightMargin=50,
-            leftMargin=50,
-            topMargin=50,
-            bottomMargin=40
+            rightMargin=40,
+            leftMargin=40,
+            topMargin=45,
+            bottomMargin=35
         )
         styles = getSampleStyleSheet()
-        
-        # Custom styles - compact and professional
+
+        # Custom styles - professional and detailed
         title_style = ParagraphStyle(
             'CustomTitle',
             parent=styles['Heading1'],
-            fontSize=22,
+            fontSize=18,
             textColor=colors.HexColor('#1a1a2e'),
-            spaceAfter=8,
+            spaceAfter=6,
             alignment=TA_CENTER,
             fontName='Helvetica-Bold'
         )
-        
+
         subtitle_style = ParagraphStyle(
             'CustomSubtitle',
             parent=styles['Heading4'],
-            fontSize=10,
+            fontSize=9,
             textColor=colors.HexColor('#666677'),
-            spaceAfter=20,
+            spaceAfter=15,
             alignment=TA_CENTER
         )
-        
+
         heading_style = ParagraphStyle(
             'CustomHeading',
             parent=styles['Heading2'],
-            fontSize=13,
+            fontSize=11,
             textColor=colors.HexColor('#1a1a2e'),
-            spaceAfter=10,
-            spaceBefore=15,
+            spaceAfter=8,
+            spaceBefore=12,
             fontName='Helvetica-Bold',
-            leading=16
+            leading=14
         )
-        
+
         normal_style = ParagraphStyle(
             'NormalText',
             parent=styles['BodyText'],
-            fontSize=9,
-            leading=12,
+            fontSize=8,
+            leading=11,
             textColor=colors.HexColor('#333344')
         )
-        
+
         info_style = ParagraphStyle(
             'InfoText',
             parent=normal_style,
-            fontSize=8,
+            fontSize=7,
             textColor=colors.HexColor('#888899'),
-            spaceAfter=15
+            spaceAfter=10
         )
-        
+
         # Build PDF content
         story = []
-        
-        # Header section - compact
+
+        # Header section
         story.append(Paragraph("Invoice Summary Report", title_style))
         story.append(Paragraph(
-            f"Period: {report_data['date_range']['start']} to {report_data['date_range']['end']}",
+            f"Period: {report_data['date_range']['start']} to {report_data['date_range']['end']} | Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
             subtitle_style
         ))
-        story.append(Spacer(1, 0.15*inch))
-        
-        # Executive Summary - compact table
+        story.append(Spacer(1, 0.12*inch))
+
+        # Executive Summary - more detailed 3x3 grid
         summary = report_data["summary"]
+        payment_rate = (summary['total_payment_amount'] / summary['total_invoice_amount'] * 100) if summary['total_invoice_amount'] > 0 else 0
+        avg_per_vendor = (summary['total_invoice_amount'] / summary['unique_vendors'] if summary['unique_vendors'] > 0 else 0)
+
         summary_data = [
-            ["Total Invoices", f"{summary['total_invoices']:,}", "Total Invoice Amount", f"₹{summary['total_invoice_amount']:,.2f}"],
-            ["Total Payment", f"₹{summary['total_payment_amount']:,.2f}", "Total Net Payment", f"₹{summary['total_net_payment_amount']:,.2f}"],
-            ["Unique Vendors", f"{summary['unique_vendors']}", "Avg Invoice Value", f"₹{(summary['total_invoice_amount']/summary['total_invoices'] if summary['total_invoices'] > 0 else 0):,.2f}"]
+            ["Total Invoices", f"{summary['total_invoices']:,}", "Unique Vendors", f"{summary['unique_vendors']}", "Payment Rate", f"{payment_rate:.1f}%"],
+            ["Total Invoice Amount", f"₹{summary['total_invoice_amount']:,.2f}", "Total Payment", f"₹{summary['total_payment_amount']:,.2f}", "Avg Invoice", f"₹{(summary['total_invoice_amount']/summary['total_invoices'] if summary['total_invoices'] > 0 else 0):,.2f}"],
+            ["Total Net Payment", f"₹{summary['total_net_payment_amount']:,.2f}", "Avg per Vendor", f"₹{avg_per_vendor:,.2f}", "Invoice Count", f"{summary['total_invoices']/summary['unique_vendors']:.1f}/vendor" if summary['unique_vendors'] > 0 else "N/A"]
         ]
-        
-        summary_table = Table(summary_data, colWidths=[1.5*inch, 1.5*inch, 1.5*inch, 1.5*inch])
+
+        summary_table = Table(summary_data, colWidths=[1.2*inch, 1.2*inch, 1.2*inch, 1.2*inch, 1.2*inch, 1.2*inch])
         summary_table.setStyle(TableStyle([
             ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1a1a2e')),
-            ('BACKGROUND', (0, 1), (-1, 1), colors.HexColor('#f8f9fa')),
+            ('BACKGROUND', (0, 1), (-1, 1), colors.HexColor('#f0f4f8')),
             ('BACKGROUND', (0, 2), (-1, 2), colors.white),
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
             ('TEXTCOLOR', (0, 1), (-1, 1), colors.HexColor('#1a1a2e')),
             ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
             ('FONTNAME', (0, 1), (-1, 1), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, -1), 9),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
-            ('TOPPADDING', (0, 0), (-1, -1), 8),
-            ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#e0e0e0')),
+            ('FONTSIZE', (0, 0), (-1, -1), 8),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+            ('TOPPADDING', (0, 0), (-1, -1), 6),
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#d0d0d0')),
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE')
         ]))
         story.append(summary_table)
-        story.append(Spacer(1, 0.2*inch))
-        
-        # Key Insights - compact bullet points
+        story.append(Spacer(1, 0.15*inch))
+
+        # Key Insights - expanded
         story.append(Paragraph("Key Insights", heading_style))
-        
-        payment_rate = (summary['total_payment_amount'] / summary['total_invoice_amount'] * 100) if summary['total_invoice_amount'] > 0 else 0
+
         insights = [
-            f"• Payment Rate: {payment_rate:.1f}% of total invoices paid",
-            f"• Average Invoice: ₹{(summary['total_invoice_amount']/summary['total_invoices'] if summary['total_invoices'] > 0 else 0):,.2f}",
-            f"• Vendor Activity: {summary['total_invoices']/summary['unique_vendors']:.1f} invoices/vendor" if summary['unique_vendors'] > 0 else ""
+            f"• Payment Completion: {payment_rate:.1f}% of total invoice amount has been paid",
+            f"• Average Invoice Value: ₹{(summary['total_invoice_amount']/summary['total_invoices'] if summary['total_invoices'] > 0 else 0):,.2f}",
+            f"• Vendor Concentration: {summary['unique_vendors']} vendors with avg {summary['total_invoices']/summary['unique_vendors']:.1f} invoices each" if summary['unique_vendors'] > 0 else "",
+            f"• Total Volume: ₹{summary['total_invoice_amount']:,.2f} across {summary['total_invoices']} invoices"
         ]
-        
+
         for insight in insights:
             if insight:
                 story.append(Paragraph(insight, normal_style))
-        
-        story.append(Spacer(1, 0.2*inch))
-        
-        # Vendor Distribution - compact table
+
+        story.append(Spacer(1, 0.15*inch))
+
+        # Vendor Distribution - top 10 with more details
         if report_data["vendor_stats"]:
-            story.append(Paragraph("Top Vendors", heading_style))
-            vendor_data = [["Vendor", "Invoices", "Amount", "%"]]
-            
+            story.append(Paragraph("Vendor Distribution (Top 10)", heading_style))
+            vendor_data = [["Vendor", "Invoices", "Total Amount", "% Share", "Avg/Invoice"]]
+
             total_amount = summary['total_invoice_amount']
-            for vendor in report_data["vendor_stats"][:8]:  # Top 8 only
+            for vendor in report_data["vendor_stats"][:10]:
                 percentage = (vendor['total_amount'] / total_amount * 100) if total_amount > 0 else 0
+                avg_invoice = (vendor['total_amount'] / vendor['invoice_count']) if vendor['invoice_count'] > 0 else 0
                 vendor_data.append([
-                    vendor["vendor_name"][:20],  # Truncate long names
+                    vendor["vendor_name"][:18],
                     str(vendor["invoice_count"]),
                     f"₹{vendor['total_amount']:,.0f}",
-                    f"{percentage:.1f}%"
+                    f"{percentage:.1f}%",
+                    f"₹{avg_invoice:,.0f}"
                 ])
-            
-            vendor_table = Table(vendor_data, colWidths=[2*inch, 0.8*inch, 1.2*inch, 0.8*inch])
+
+            vendor_table = Table(vendor_data, colWidths=[1.6*inch, 0.7*inch, 1.1*inch, 0.7*inch, 1.0*inch])
             vendor_table.setStyle(TableStyle([
-                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#4a90e2')),
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#2c5282')),
                 ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
                 ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                ('FONTSIZE', (0, 0), (-1, -1), 8),
-                ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
-                ('TOPPADDING', (0, 0), (-1, -1), 6),
-                ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#e0e0e0')),
-                ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f8f9fa')])
+                ('FONTSIZE', (0, 0), (-1, -1), 7),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+                ('TOPPADDING', (0, 0), (-1, -1), 5),
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#d0d0d0')),
+                ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f7fafc')])
             ]))
             story.append(vendor_table)
-            story.append(Spacer(1, 0.2*inch))
-        
-        # Missing Fields - compact if exists
+            story.append(Spacer(1, 0.15*inch))
+
+        # Data Quality Analysis
         if report_data["missing_fields"] and any(report_data["missing_fields"].values()):
-            story.append(Paragraph("Data Quality", heading_style))
+            story.append(Paragraph("Data Quality Analysis", heading_style))
             missing = report_data["missing_fields"]
-            missing_data = [[field.replace('_', ' ').title(), str(count)] for field, count in missing.items() if count > 0]
-            
-            if missing_data:
-                missing_table = Table([["Field", "Missing"]] + missing_data, colWidths=[2*inch, 1*inch])
+            total_invoices = summary['total_invoices']
+            missing_data = [["Field", "Missing Count", "% of Total"]]
+
+            for field, count in missing.items():
+                if count > 0:
+                    percentage = (count / total_invoices * 100) if total_invoices > 0 else 0
+                    missing_data.append([
+                        field.replace('_', ' ').title(),
+                        str(count),
+                        f"{percentage:.1f}%"
+                    ])
+
+            if len(missing_data) > 1:
+                missing_table = Table(missing_data, colWidths=[1.8*inch, 1.0*inch, 1.0*inch])
                 missing_table.setStyle(TableStyle([
-                    ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#f5a623')),
+                    ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#c05621')),
                     ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
                     ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                    ('FONTSIZE', (0, 0), (-1, -1), 8),
-                    ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
-                    ('TOPPADDING', (0, 0), (-1, -1), 6),
-                    ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#e0e0e0'))
+                    ('FONTSIZE', (0, 0), (-1, -1), 7),
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+                    ('TOPPADDING', (0, 0), (-1, -1), 5),
+                    ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#d0d0d0')),
+                    ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#fffaf0')])
                 ]))
                 story.append(missing_table)
-                story.append(Spacer(1, 0.2*inch))
-        
-        # Daily Trends - compact, last 10 days only
+                story.append(Spacer(1, 0.15*inch))
+
+        # Daily Trends - compact horizontal layout
         if report_data["trends"]["daily"]:
-            story.append(Paragraph("Daily Trends (Last 10 Days)", heading_style))
-            trend_data = [["Date", "Invoices", "Amount"]]
-            for trend in report_data["trends"]["daily"][-10:]:  # Last 10 only
+            story.append(Paragraph("Daily Trends", heading_style))
+            trend_data = [["Date", "Invoices", "Amount", "Avg/Invoice"]]
+
+            for trend in report_data["trends"]["daily"][-7:]:  # Last 7 days
+                avg_invoice = (trend['total_amount'] / trend['invoice_count']) if trend['invoice_count'] > 0 else 0
                 trend_data.append([
-                    trend["date"][5:],  # Short date (MM-DD)
+                    trend["date"][5:],
                     str(trend["invoice_count"]),
-                    f"₹{trend['total_amount']:,.0f}"
+                    f"₹{trend['total_amount']:,.0f}",
+                    f"₹{avg_invoice:,.0f}"
                 ])
-            
-            trend_table = Table(trend_data, colWidths=[1*inch, 0.8*inch, 1.2*inch])
+
+            trend_table = Table(trend_data, colWidths=[0.9*inch, 0.7*inch, 1.1*inch, 1.0*inch])
             trend_table.setStyle(TableStyle([
-                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#27ae60')),
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#2f855a')),
                 ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
                 ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                ('FONTSIZE', (0, 0), (-1, -1), 8),
-                ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
-                ('TOPPADDING', (0, 0), (-1, -1), 6),
-                ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#e0e0e0')),
-                ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f8f9fa')])
+                ('FONTSIZE', (0, 0), (-1, -1), 7),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+                ('TOPPADDING', (0, 0), (-1, -1), 5),
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#d0d0d0')),
+                ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f0fff4')])
             ]))
             story.append(trend_table)
-            story.append(Spacer(1, 0.2*inch))
-        
+            story.append(Spacer(1, 0.12*inch))
+
         # Footer note
         story.append(Paragraph(
-            "Download Excel for complete detailed records. Failures not tracked in database.",
+            "Note: This is a summary report. Download Excel for complete detailed records with all invoice-level data. Processing failures are not tracked in the database.",
             info_style
         ))
-        
+
         doc.build(story)
         buffer.seek(0)
         return buffer

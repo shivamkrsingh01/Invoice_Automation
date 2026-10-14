@@ -11,7 +11,7 @@ msal==1.24.0
 # Admin login sessions
 PyJWT==2.14.0
  
-#Document Extraction 
+#Document Extraction - OCR
 pymupdf==1.23.8
 pdfplumber==0.10.3
 pytesseract==0.3.10
