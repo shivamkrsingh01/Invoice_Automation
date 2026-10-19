@@ -32,10 +32,6 @@ class TimestampTracker:
     a manual +5:30/-5:30 offset.
     """
 
-    # def __init__(self, timestamp_file: str = "last_processed.json"):
-    #     self.timestamp_file = timestamp_file
-    #     self.last_processed_time: Optional[datetime] = None  # always tz-aware UTC
-    #     self._load_timestamp()
 
     def __init__(self, timestamp_file: str = "last_processed.json"):
         self.timestamp_file = timestamp_file
@@ -71,15 +67,6 @@ class TimestampTracker:
                                 f"{legacy_naive_ist.isoformat()} (assumed IST) to "
                                 f"UTC: {self.last_processed_time.isoformat()}"
                             )
-        #                 else:
-        #                     self.last_processed_time = parsed.astimezone(timezone.utc)
-        #                 logger.info(
-        #                     f"Loaded last processed timestamp (UTC): "
-        #                     f"{self.last_processed_time.isoformat()}"
-        #                 )
-        # except Exception as e:
-        #     logger.warning(f"Could not load timestamp file: {str(e)}")
-        #     self.last_processed_time = None
 
                         else:
                             self.last_processed_time = parsed.astimezone(timezone.utc)
@@ -93,29 +80,6 @@ class TimestampTracker:
             self.last_processed_time = None
             self.seen_ids_at_watermark = set()
 
-    # def update_timestamp(self, timestamp: datetime):
-    #     """Update the last processed timestamp.
-
-    #     Accepts either a timezone-aware datetime (converted to UTC) or a
-    #     naive datetime (assumed to already be UTC, e.g. from
-    #     datetime.utcnow()) - always stored internally, and persisted to
-    #     disk, as timezone-aware UTC. No manual timezone arithmetic here.
-    #     """
-    #     if timestamp.tzinfo is None:
-    #         timestamp = timestamp.replace(tzinfo=timezone.utc)
-    #     else:
-    #         timestamp = timestamp.astimezone(timezone.utc)
-
-    #     self.last_processed_time = timestamp
-    #     try:
-    #         with open(self.timestamp_file, 'w') as f:
-    #             json.dump({
-    #                 'last_processed': timestamp.isoformat(),
-    #                 'updated_at': datetime.now(timezone.utc).isoformat()
-    #             }, f, indent=2)
-    #         logger.info(f"Updated last processed timestamp to (UTC): {timestamp.isoformat()}")
-    #     except Exception as e:
-    #         logger.error(f"Could not save timestamp file: {str(e)}")
 
     def update_timestamp(self, timestamp: datetime, message_ids: Optional[List[str]] = None):
         """Update the last processed timestamp, and the set of message IDs

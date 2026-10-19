@@ -1,6 +1,5 @@
 
 
-
 """Gemini-based invoice extraction service - STANDALONE.
 
 Used by app/services/invoice_processor.py as the active invoice extraction
@@ -91,46 +90,49 @@ class _ExtractionContentResult(BaseModel):
     payment_batches: List[_PaymentBatch] = []
 
 
-EXTRACTION_INSTRUCTIONS = """You are an invoice data extraction system. You will be shown the content of a business document (an email, a PDF, an image of an invoice, or extracted text from a DOCX/XLSX file). It may be a single invoice, multiple invoices in one document, a payment advice, or something that is not an invoice at all.
+EXTRACTION_INSTRUCTIONS = """Extract invoice data from business documents (email, PDF, image, DOCX, XLSX). For each distinct invoice found, extract:
 
-Extract the following fields for EVERY distinct invoice you find in the content:
+- invoice_number: Unique identifier (labels: Invoice No, Invoice Number, Inv No, Bill No, Invoice #)
+- invoice_date: Issue date (labels: Invoice Date, Bill Date, Inv Date). Normalize to YYYY-MM-DD if confident; otherwise return as written
+- invoice_amount: Total billed amount (grand total)
+- payment_amount: Amount paid specifically for THIS invoice (labels: Payment Done, Net Payment Done, Amount Paid, Paid Amount, Net Payment when per-invoice). Use final stated figure; don't recompute from deductions. NOT the same as total_payment/total_net_payment (batch-level). Return null if no per-invoice paid amount stated
+- utr_number: Bank UTR/transaction reference
+- total_payment: Batch/table total before deductions (if distinguished from invoice_amount)
+- total_net_payment: Final net amount after all deductions (labels: Net Payment, Net Payable, Net Amount Payable, Net Amount). Table-level figure. If no net figure printed, return null
+- vendor_name: Vendor/supplier name (issuer, not recipient)
 
-- invoice_number: The invoice's own identifying number. Field labels that mean this: "Invoice No", "Invoice Number", "Inv No", "Bill No", "Invoice #".
-- invoice_date: The date the invoice was issued. Field labels that mean this: "Invoice Date", "Bill Date", "Inv Date". Normalize to YYYY-MM-DD when you are confident of the day/month/year; otherwise return the date exactly as written.
-- invoice_amount: The total amount the invoice is billed for (the invoice's total/grand total).
-- payment_amount: The amount that has actually been paid TOWARD THIS SPECIFIC INVOICE INDIVIDUALLY, if the document states one for that invoice by itself. This is different from invoice_amount - it's what was paid, not what was billed. Field labels that mean this: "Payment Done", "Net Payment Done", "Amount Paid", "Paid Amount", "Net Payment" (when printed once per invoice, not once for a whole table - see total_net_payment below for that case). This applies just as much to a plain narrative/paragraph-style payment advice (e.g. one paragraph per invoice, each ending in its own "PAYMENT DONE Rs. X" line, possibly after lines showing TDS or credit-note deductions worked out above it) as it does to a table - do not extract this only from tables. Use the FINAL stated figure for that invoice; do not recompute it yourself from the deduction lines even if you could. It is also different from total_payment/total_net_payment (see rule 6 below), which are batch-level - do NOT fill payment_amount with a batch-level value, and do NOT leave payment_amount null just because the invoice also happens to share a batch UTR with other invoices. If the document does not state a per-invoice paid amount for this specific invoice, return null for payment_amount even when total_payment/total_net_payment is known for the batch.
-- utr_number: The bank UTR / transaction reference / payment reference number, if present.
-- total_payment: The batch/table total amount payable/due (before the final deductions that give total_net_payment), if the document distinguishes this from invoice_amount (e.g. after taxes or adjustments). If the document does not distinguish it from invoice_amount, return null rather than guessing.
-- total_net_payment: The FINAL NET amount of the payment table/batch this invoice belongs to, after all deductions (TDS, debits/advances, discounts). Field labels that mean this: "Net Payment" (in the table's Total row), "Net Payable", "Net Amount Payable", "Net Amount". It is a table-level figure, so every invoice in that table gets the same value. Example: a Total row whose Net Payment column reads 13,113,325.39 gives 13113325.39; a "NET PAYABLE 13,670,690.51" line under the table gives 13670690.51. It is NOT the gross/total before deductions. If no net figure is printed for the table, return null - never compute it yourself.
-- vendor_name: The name of the vendor/supplier who issued the invoice (not the recipient/customer). This is used to tell apart invoices from different vendors that happen to share an invoice number, so extract it whenever the document identifies who issued the invoice.
+Rules:
+1. Return null if value not clearly present. Never guess, estimate, infer, or invent
+2. Multiple invoices → one array entry per invoice. No invoices → empty array
+3. Match by meaning, not exact labels. Never fabricate values
+4. Numbers: plain (no symbols, no separators) e.g. 45250.75 not "Rs. 45,250.75". Negative: trailing minus (e.g. "2,377.00-" → -2377.00). Parentheses (e.g. "(2,500.00)") are positive unless text clearly indicates deduction
+5. Preserve exact decimals - no rounding/truncing
 
-Rules you must follow exactly:
-1. If a field's value is not clearly present in the content, return null for that field. Do NOT guess, estimate, infer from context, or invent a value under any circumstances.
-2. If the document contains multiple distinct invoices (e.g. a multi-invoice PDF, or a table listing several invoices), return one entry in the "invoices" array per invoice.
-3. If the content contains no invoice at all, return an empty "invoices" array.
-4. Different vendors use different field names and layouts - use your understanding of the document's meaning, not just exact label matching, to find the right value. But never fabricate a value that isn't actually present.
-5. Numbers must be plain numbers (no currency symbols, no thousands separators) - e.g. 45250.75, not "Rs. 45,250.75". A NEGATIVE amount is written in these documents with a trailing minus sign, e.g. "2,377.00-" or "11,267.63-" (a deduction such as TDS or Adv/Debit) - return that as a negative number, e.g. -2377.00. Parentheses around an amount, e.g. "(2,500.00)", are NOT a negative sign in these documents - they are just a way of drawing attention to or separating the figure. Return the plain positive number for a parenthesized amount, e.g. 2500.00, unless the surrounding text itself makes clear it is a deduction (in which case follow that wording, not the parentheses).
-6. Payment batches. A document can hold ONE or SEVERAL payment tables/batches - each is a group of invoice rows with its own UTR (bank payment reference), total payment and net payment. Report them in the top-level "payment_batches" array, one entry per batch:
-   - utr_number: the UTR printed for that batch, exactly as written.
-   - total_payment: that batch's total payment amount (exact digits, e.g. 1541514.29 - never rounded).
-   - total_net_payment: that batch's final net payment/net payable (see the total_net_payment field above), or null if none is printed.
-   - invoice_numbers: the invoice_number of EVERY invoice row that belongs to that batch, copied exactly as you return them in "invoices".
-   How to decide which rows belong to which batch:
-   - The UTR / totals of a batch can be printed ABOVE its rows (a header), BELOW its rows (a subtotal or Total row) or beside them. Do NOT assume one direction. Use the document's own structure: separate tables, borders, headings, blank rows, and which rows a subtotal/Total row actually adds up.
-   - Check with arithmetic when you can: the invoice amounts of a batch's rows normally add up to (or, after deductions, come close to) that batch's total payment. If a group of rows adds up to a printed total, that total and its UTR belong to that group and to no other group.
-   - A UTR/total belongs to exactly ONE batch. Never give the same UTR to two different groups of rows unless the document truly shows them paid under that one UTR, and never leave a group without its UTR when the document prints one for it.
-   - If the whole document is a single batch, return a single entry listing every invoice.
-   - If the document has no UTR/payment totals at all, return an empty "payment_batches" array.
-   - A batch is for a value that is genuinely SHARED across its rows (one UTR, one combined total, printed once for the group) - not for a value that is separately printed for each invoice. If instead each invoice states its OWN total_payment individually (e.g. "Total Payment: X" written right under that one invoice's own details, not in a group subtotal), that is a per-invoice value: put it directly on that invoice's own total_payment field, exactly like invoice_amount, EVEN IF several such invoices also happen to share one UTR and therefore belong to the same batch for utr_number purposes. In that case the batch's own total_payment/total_net_payment should be null (there is no combined figure to report), and each invoice keeps the individual value you read for it - do not average, sum, copy one invoice's value onto another, or blank them because a batch exists.
-   In the per-invoice fields, still fill utr_number, total_payment and total_net_payment with your best value for that invoice - from its own explicit label if it has one, otherwise from its batch's shared value if the batch has one, otherwise null. The batch list exists to fix rows where a shared value was not repeated on every row; it is never a reason to erase a value an invoice already states for itself.
-7. Do NOT propagate any batch-level figure into payment_amount. payment_amount stays null unless the document states a paid amount for that specific invoice on its own (e.g. a per-row Net Payment column in a payment advice).
-8. Preserve exact decimal digits as printed - do not round or truncate amounts.
+Payment batches (document can have one or several): Each batch = group of invoice rows with shared UTR/total. Report in "payment_batches" array:
+- utr_number: UTR for that batch (exact)
+- total_payment: Batch total payment (exact digits, no rounding)
+- total_net_payment: Batch final net payment (or null if none printed)
+- invoice_numbers: invoice_number of every row in this batch
+
+Batch assignment rules:
+- UTR/totals can be above/below/beside rows. Use document structure (tables, borders, headings, blank rows, which rows subtotal adds to)
+- Use arithmetic check: row amounts should sum to batch total (allowing for deductions)
+- One UTR/total = one batch. Never split UTR across groups, never leave group without its UTR
+- Single batch document = one entry with all invoices
+- No UTR/totals = empty payment_batches array
+- Batch = genuinely shared value (one UTR, one combined total printed once). If each invoice has its own total_payment label (e.g. "Total Payment: X" under individual invoice), that's per-invoice value → put on invoice's total_payment field, not batch. In that case, batch's total_payment/total_net_payment = null (no combined figure)
+- Per-invoice fields: fill utr_number/total_payment/total_net_payment from invoice's own label if present, else from batch's shared value, else null. Batch list fixes rows where shared value wasn't repeated; never erases invoice's own stated value
+6. Never copy batch-level figure to payment_amount. payment_amount = null unless document states paid amount for that specific invoice
 """
 
 
 class GeminiExtractionService:
     """Standalone invoice extraction using Gemini's multimodal understanding.
     Not yet called by the email processing pipeline - see module docstring."""
+
+    # Official model limits from https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-lite
+    MAX_INPUT_TOKENS = 1_048_576
+    MAX_OUTPUT_TOKENS = 65_536
 
     def __init__(self):
         if not settings.gemini_api_key:
@@ -140,6 +142,15 @@ class GeminiExtractionService:
             )
         self.client = genai.Client(api_key=settings.gemini_api_key)
         self.model = "gemini-3.1-flash-lite"
+        self.configured_max_output_tokens = 65536  # From GenerateContentConfig in _run_extraction
+
+        # Log model limits at initialization
+        logger.info(
+            f"[GEMINI LIMITS] Model: {self.model} | "
+            f"Max input: {self.MAX_INPUT_TOKENS} | "
+            f"Max output: {self.MAX_OUTPUT_TOKENS} | "
+            f"Configured output limit: {self.configured_max_output_tokens}"
+        )
 
     # -- Public API -----------------------------------------------------
 
@@ -148,7 +159,7 @@ class GeminiExtractionService:
         content: bytes,
         mime_type: str,
         source_label: str,
-        email_timestamp: Optional[str] = None,
+        email_timestamp: Optional[str] = None,    
     ) -> Dict[str, Any]:
         """Extract invoices from raw PDF or image bytes.
 
@@ -179,7 +190,7 @@ class GeminiExtractionService:
 
         part = types.Part.from_bytes(data=content, mime_type=mime_type)
         return self._run_extraction(
-            contents=[EXTRACTION_INSTRUCTIONS, part],
+            contents=[part],
             source_label=source_label,
             email_timestamp=email_timestamp,
         )
@@ -237,6 +248,10 @@ class GeminiExtractionService:
         src = fitz.open(stream=content, filetype="pdf")
         all_invoices: List[Dict[str, Any]] = []
         seen_invoice_keys: set = set()
+        total_gemini_time = 0.0
+        total_input_tokens = 0
+        total_output_tokens = 0
+        total_cached_tokens = 0
 
         for i, (start, end) in enumerate(ranges, start=1):
             chunk_label = f"{source_label} (pages {start + 1}-{end + 1} of {page_count})"
@@ -247,13 +262,23 @@ class GeminiExtractionService:
             logger.info(f"Extracting chunk {i}/{len(ranges)}: {chunk_label}")
             part = types.Part.from_bytes(data=chunk_bytes, mime_type="application/pdf")
             result = self._run_extraction(
-                contents=[EXTRACTION_INSTRUCTIONS, part],
+                contents=[part],
                 source_label=chunk_label,
                 email_timestamp=email_timestamp,
             )
             # _run_extraction already raises on a chunk that fails after
             # its own retries (including MAX_TOKENS) - nothing further to
             # catch here; letting it propagate is the point (see docstring).
+
+            # Aggregate token metadata across chunks
+            metadata = result.get("_gemini_metadata", {})
+            total_gemini_time += metadata.get("time_sec", 0)
+            if metadata.get("input_tokens") is not None:
+                total_input_tokens += metadata["input_tokens"]
+            if metadata.get("output_tokens") is not None:
+                total_output_tokens += metadata["output_tokens"]
+            if metadata.get("cached_tokens") is not None:
+                total_cached_tokens += metadata["cached_tokens"]
 
             chunk_invoice_count = len(result["invoices"])
             for inv in result["invoices"]:
@@ -272,7 +297,24 @@ class GeminiExtractionService:
             f"{source_label}: all {len(ranges)} chunks extracted successfully, "
             f"{len(all_invoices)} invoice(s) total"
         )
-        return {"invoices": all_invoices}
+
+        # Log aggregated PDF timing and token usage
+        logger.info(
+            f"[PDF] {source_label} | Total Gemini time: {total_gemini_time:.2f} sec | "
+            f"Input: {total_input_tokens if total_input_tokens else 'unavailable'} | "
+            f"Output: {total_output_tokens if total_output_tokens else 'unavailable'} | "
+            f"Total: {total_input_tokens + total_output_tokens if (total_input_tokens and total_output_tokens) else 'unavailable'}"
+        )
+
+        result = {"invoices": all_invoices}
+        result["_gemini_metadata"] = {
+            "time_sec": total_gemini_time,
+            "input_tokens": total_input_tokens if total_input_tokens else None,
+            "output_tokens": total_output_tokens if total_output_tokens else None,
+            "total_tokens": (total_input_tokens + total_output_tokens) if (total_input_tokens and total_output_tokens) else None,
+            "cached_tokens": total_cached_tokens if total_cached_tokens else None,
+        }
+        return result
 
     def extract_from_text(
         self,
@@ -283,9 +325,8 @@ class GeminiExtractionService:
         """Extract invoices from plain text or HTML content - use this for
         the email body, and for DOCX/XLSX content already converted to
         text by the two helpers below."""
-        prompt = f"{EXTRACTION_INSTRUCTIONS}\n\nDocument content:\n{text}"
         return self._run_extraction(
-            contents=[prompt],
+            contents=[text],
             source_label=source_label,
             email_timestamp=email_timestamp,
         )
@@ -323,12 +364,16 @@ class GeminiExtractionService:
         # response doesn't silently cost a whole document.
         parsed: Optional[_ExtractionContentResult] = None
         last_error: Optional[Exception] = None
+        gemini_start_time = time.perf_counter()
+        final_response = None
+
         for attempt in range(1, 4):
             try:
                 response = self.client.models.generate_content(
                     model=self.model,
                     contents=contents,
                     config=types.GenerateContentConfig(
+                        system_instruction=EXTRACTION_INSTRUCTIONS,
                         response_mime_type="application/json",
                         response_schema=_ExtractionContentResult,
                         temperature=0.0,  # data extraction, not creative writing - keep it deterministic
@@ -345,6 +390,7 @@ class GeminiExtractionService:
                         max_output_tokens=65536,
                     ),
                 )
+                final_response = response
 
                 finish_reason = None
                 try:
@@ -377,25 +423,79 @@ class GeminiExtractionService:
         if parsed is None:
             raise last_error
 
-        # Merge Gemini's content-derived fields with the caller-supplied
-        # metadata to produce the exact output shape the task requires.
-        invoices = []
-        for inv in parsed.invoices:
-            invoices.append({
-                "invoice_number": inv.invoice_number,
-                "invoice_date": inv.invoice_date,
-                "invoice_amount": inv.invoice_amount,
-                "payment_amount": inv.payment_amount,
-                "utr_number": inv.utr_number,
-                "total_payment": inv.total_payment,
-                "total_net_payment": inv.total_net_payment,
-                "vendor_name": inv.vendor_name,
-                "invoice_source": source_label,
-                "email_timestamp": email_timestamp,
-            })
+        # Extract token usage from response metadata
+        gemini_time = time.perf_counter() - gemini_start_time
+        input_tokens = None
+        output_tokens = None
+        total_tokens = None
+        cached_tokens = None
 
-        self._apply_payment_batches(invoices, parsed.payment_batches)
-        return {"invoices": invoices}
+        try:
+            usage_metadata = getattr(final_response, "usage_metadata", None)
+            if usage_metadata:
+                input_tokens = getattr(usage_metadata, "prompt_token_count", None)
+                output_tokens = getattr(usage_metadata, "candidates_token_count", None)
+                total_tokens = getattr(usage_metadata, "total_token_count", None)
+                cached_tokens = getattr(usage_metadata, "cached_content_token_count", None)
+        except (AttributeError, TypeError):
+            pass
+
+        # Log Gemini timing and token usage
+        input_str = str(input_tokens) if input_tokens is not None else "unavailable"
+        output_str = str(output_tokens) if output_tokens is not None else "unavailable"
+        total_str = str(total_tokens) if total_tokens is not None else "unavailable"
+        cached_str = f" (cached: {cached_tokens})" if cached_tokens is not None else ""
+
+        logger.info(
+            f"[GEMINI] Model: {self.model} | Time: {gemini_time:.2f} sec | "
+            f"Input: {input_str} | Output: {output_str} | Total: {total_str}{cached_str}"
+        )
+
+        # Log token limit utilization if we have actual usage
+        if input_tokens is not None and self.MAX_INPUT_TOKENS:
+            input_pct = (input_tokens / self.MAX_INPUT_TOKENS) * 100
+            logger.info(
+                f"[GEMINI LIMITS] Input: {input_tokens} / {self.MAX_INPUT_TOKENS} ({input_pct:.2f}%)"
+            )
+        if output_tokens is not None and self.configured_max_output_tokens:
+            output_pct = (output_tokens / self.configured_max_output_tokens) * 100
+            logger.info(
+                f"[GEMINI LIMITS] Output: {output_tokens} / {self.configured_max_output_tokens} ({output_pct:.2f}%)"
+            )
+
+        # Return result with token metadata attached
+        result = {"invoices": []}
+        try:
+            # Merge Gemini's content-derived fields with the caller-supplied
+            # metadata to produce the exact output shape the task requires.
+            invoices = []
+            for inv in parsed.invoices:
+                invoices.append({
+                    "invoice_number": inv.invoice_number,
+                    "invoice_date": inv.invoice_date,
+                    "invoice_amount": inv.invoice_amount,
+                    "payment_amount": inv.payment_amount,
+                    "utr_number": inv.utr_number,
+                    "total_payment": inv.total_payment,
+                    "total_net_payment": inv.total_net_payment,
+                    "vendor_name": inv.vendor_name,
+                    "invoice_source": source_label,
+                    "email_timestamp": email_timestamp,
+                })
+
+            self._apply_payment_batches(invoices, parsed.payment_batches)
+            result = {"invoices": invoices}
+        finally:
+            # Always attach token metadata for upstream aggregation
+            result["_gemini_metadata"] = {
+                "time_sec": gemini_time,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "total_tokens": total_tokens,
+                "cached_tokens": cached_tokens,
+            }
+
+        return result
 
     # -- Batch assignment ---------------------------------------------------
 

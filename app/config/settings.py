@@ -49,8 +49,8 @@ class Settings(BaseSettings):
     # GeminiExtractionService._extract_pdf_in_chunks. A normal, short PDF
     # (the common case) is completely unaffected by this - it takes the
     # same single-call path as before.
-    pdf_chunk_threshold_pages: int = 20
-    pdf_chunk_size_pages: int = 10
+    pdf_chunk_threshold_pages: int = 25
+    pdf_chunk_size_pages: int = 25
 
     # Admin login (Part 6) - single admin user, simple by design to match
     # the project's scale. Sessions are a signed token, not stored server

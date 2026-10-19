@@ -8,8 +8,9 @@ Handles the 8 canonical invoice fields, with these business rules:
     e.g. when displaying a record).
 """
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 from decimal import Decimal, InvalidOperation
+import time
 import psycopg
 from psycopg_pool import ConnectionPool
 from app.config.settings import settings
@@ -142,6 +143,8 @@ class PostgresStorageService:
         value is Python None, which becomes a real SQL NULL - never the
         text "Null" (that conversion only happens on the way back out, see
         to_display_row()).
+
+        Returns success boolean.
         """
         values = [invoice_data.get(col) for col in INVOICE_COLUMNS]
 
@@ -155,14 +158,45 @@ class PostgresStorageService:
                 with conn.cursor() as cur:
                     cur.execute(insert_sql, values)
                 conn.commit()
-            logger.info(
-                f"Stored invoice in PostgreSQL: {invoice_data.get('invoice_number')}"
-            )
+            logger.info(f"Stored invoice in PostgreSQL: {invoice_data.get('invoice_number')}")
             return True
         except psycopg.Error as e:
 
             logger.error(f"Failed to store invoice in PostgreSQL: {str(e)}")
             return False
+
+    def add_invoices_bulk(self, invoices_data: List[Dict[str, Any]]) -> tuple[int, float]:
+        """Bulk insert multiple invoice rows in a single transaction.
+        Much faster than individual inserts for large batches.
+
+        Returns (count_inserted, insert_time_in_seconds) tuple.
+        """
+        if not invoices_data:
+            return 0, 0.0
+
+        values_list = []
+        for invoice_data in invoices_data:
+            values = [invoice_data.get(col) for col in INVOICE_COLUMNS]
+            values_list.append(values)
+
+        insert_sql = f"""
+            INSERT INTO invoices ({', '.join(INVOICE_COLUMNS)})
+            VALUES ({', '.join(['%s'] * len(INVOICE_COLUMNS))})
+        """
+
+        try:
+            insert_start = time.perf_counter()
+            with self.pool.connection() as conn:
+                with conn.cursor() as cur:
+                    cur.executemany(insert_sql, values_list)
+                conn.commit()
+            insert_time = time.perf_counter() - insert_start
+            logger.info(f"Bulk stored {len(invoices_data)} invoices in PostgreSQL")
+            return len(invoices_data), insert_time
+        except psycopg.Error as e:
+
+            logger.error(f"Failed to bulk store invoices in PostgreSQL: {str(e)}")
+            return 0, 0.0
 
     def check_duplicate(self, invoice_number: Optional[str], vendor_name: Optional[str] = None) -> bool:
         """Duplicate-detection business rule: invoice_number is the

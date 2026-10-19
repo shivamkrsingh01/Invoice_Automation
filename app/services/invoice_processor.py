@@ -4,6 +4,7 @@
 from typing import Dict, Any, List, Optional
 from datetime import datetime, timedelta, timezone
 import mimetypes
+import time
 from app.services.graph_service import GraphService
 from app.services.gemini_extraction_service import GeminiExtractionService
 from app.services.postgres_storage_service import PostgresStorageService
@@ -122,6 +123,7 @@ class InvoiceProcessor:
     def process_inbox(self, limit: int = 10) -> Dict[str, Any]:
         """Process emails from the inbox and extract invoices."""
         logger.info("Starting inbox processing")
+        run_start_time = time.perf_counter()
 
         results = {
             "emails_processed": 0,
@@ -131,6 +133,12 @@ class InvoiceProcessor:
             "documents_skipped_duplicate": 0,
             "errors": []
         }
+
+        total_gemini_tokens = 0
+        total_db_time = 0.0
+        total_extraction_time = 0.0
+        total_fetch_time = 0.0
+        fetch_time = 0.0
 
         try:
             logger.info("Storage backend: postgres")
@@ -147,11 +155,18 @@ class InvoiceProcessor:
                     since_filter = one_hour_ago.strftime('%Y-%m-%dT%H:%M:%SZ')
                     logger.info(f"Processing emails from last 1 hour: {since_filter}")
 
+            # Time email fetching
+            fetch_start = time.perf_counter()
             messages = self.graph_service.get_messages(limit=limit, since=since_filter)
+            total_fetch_time = time.perf_counter() - fetch_start
+            logger.info(f"[GRAPH] Email fetch time: {total_fetch_time:.2f} sec")
+
             results["emails_processed"] = len(messages)
 
             if len(messages) == 0:
                 logger.info("No new emails to process")
+                run_total_time = time.perf_counter() - run_start_time
+                logger.info(f"[RUN TOTAL] Emails processed: 0 | Total time: {run_total_time:.2f} sec | Fetch time: {total_fetch_time:.2f} sec | Extraction time: 0.00 sec | Gemini tokens: 0 | DB time: 0.00 sec")
                 return results
 
             # Watermark for the NEXT run's `since` filter. Tracked as the
@@ -193,6 +208,10 @@ class InvoiceProcessor:
             for message in messages:
                 message_id = message.get("id")
                 subject = message.get("subject", "No Subject")
+                email_start_time = time.perf_counter()
+                email_gemini_tokens = 0
+                email_db_time = 0.0
+                email_extraction_time = 0.0
 
                 received_dt: Optional[datetime] = None
                 received_str = message.get("receivedDateTime")
@@ -223,14 +242,24 @@ class InvoiceProcessor:
 
                 logger.info(f"Processing email: {subject} (ID: {message_id})")
 
-                try:            
+                try:
+                    # Time attachment listing
+                    attach_start = time.perf_counter()
                     attachments = self.graph_service.get_attachments(message_id)
+                    attach_time = time.perf_counter() - attach_start
+                    logger.info(f"[GRAPH] Attachment list time: {attach_time:.2f} sec")
 
                     # Process email body content first (may contain 0, 1, or many invoices)
                     body_result = self._process_email_body(message_id, subject)
                     if body_result["success"]:
                         results["invoices_extracted"] += body_result["invoices_found"]
                         results["invoices_stored"] += body_result["invoices_stored"]
+                        if body_result.get("gemini_tokens"):
+                            email_gemini_tokens += body_result["gemini_tokens"]
+                        if body_result.get("db_time"):
+                            email_db_time += body_result["db_time"]
+                        if body_result.get("extraction_time"):
+                            email_extraction_time += body_result.get("extraction_time", 0)
                     elif body_result.get("duplicate"):
                         results["documents_skipped_duplicate"] += 1
 
@@ -245,6 +274,12 @@ class InvoiceProcessor:
                             if attachment_result["success"]:
                                 results["invoices_extracted"] += attachment_result["invoices_found"]
                                 results["invoices_stored"] += attachment_result["invoices_stored"]
+                                if attachment_result.get("gemini_tokens"):
+                                    email_gemini_tokens += attachment_result["gemini_tokens"]
+                                if attachment_result.get("db_time"):
+                                    email_db_time += attachment_result["db_time"]
+                                if attachment_result.get("extraction_time"):
+                                    email_extraction_time += attachment_result.get("extraction_time", 0)
                             elif attachment_result.get("duplicate"):
                                 results["documents_skipped_duplicate"] += 1
                             else:
@@ -267,6 +302,12 @@ class InvoiceProcessor:
                         "email_id": message_id,
                         "error": error_msg
                     })
+
+                email_time = time.perf_counter() - email_start_time
+                logger.info(f"[EMAIL] ID: {message_id} | Total time: {email_time:.2f} sec | Extraction time: {email_extraction_time:.2f} sec | Gemini tokens: {email_gemini_tokens if email_gemini_tokens else 'unavailable'} | DB time: {email_db_time:.2f} sec")
+                total_gemini_tokens += email_gemini_tokens
+                total_db_time += email_db_time
+                total_extraction_time += email_extraction_time
 
             logger.info(f"Processing complete. Results: {results}")
 
@@ -312,12 +353,17 @@ class InvoiceProcessor:
             results["last_processed_utc"] = last_processed.isoformat() if last_processed else None
             results["last_processed_ist"] = self.timestamp_tracker.get_last_processed_ist_display()
 
+            run_total_time = time.perf_counter() - run_start_time
+            logger.info(f"[RUN TOTAL] Emails processed: {results['emails_processed']} | Total time: {run_total_time:.2f} sec | Fetch time: {total_fetch_time:.2f} sec | Extraction time: {total_extraction_time:.2f} sec | Gemini tokens: {total_gemini_tokens if total_gemini_tokens else 'unavailable'} | DB time: {total_db_time:.2f} sec")
+
             return results
 
         except Exception as e:
             error_msg = f"Fatal error during inbox processing: {str(e)}"
             logger.error(error_msg)
             results["errors"].append({"error": error_msg})
+            run_total_time = time.perf_counter() - run_start_time
+            logger.info(f"[RUN TOTAL] Emails processed: {results['emails_processed']} | Total time: {run_total_time:.2f} sec | Fetch time: {total_fetch_time:.2f} sec | Extraction time: {total_extraction_time:.2f} sec | Gemini tokens: {total_gemini_tokens if total_gemini_tokens else 'unavailable'} | DB time: {total_db_time:.2f} sec")
             return results
 
     def _process_email_body(self, message_id: str, subject: str) -> Dict[str, Any]:
@@ -328,13 +374,20 @@ class InvoiceProcessor:
             "invoices_found": 0,
             "invoices_stored": 0,
             "duplicate": False,
-            "error": None
+            "error": None,
+            "gemini_tokens": 0,
+            "extraction_time": 0.0
         }
+
+        body_start_time = time.perf_counter()
 
         try:
             # Get the RAW HTML body so any <table> structure survives - a table
             # listing multiple invoices must not be flattened into one blob of text.
+            html_fetch_start = time.perf_counter()
             html_content = self.graph_service.get_message_html(message_id)
+            html_fetch_time = time.perf_counter() - html_fetch_start
+            logger.info(f"[GRAPH] Email body fetch time: {html_fetch_time:.2f} sec")
 
             if not html_content or len(html_content.strip()) < 50:
                 logger.info(f"Email body too short or empty: {subject}")
@@ -365,10 +418,21 @@ class InvoiceProcessor:
 
             # Gemini reads the HTML directly - including any <table> of
             # multiple invoices - no local parsing needed here.
+            extraction_start = time.perf_counter()
             gemini_result = self.document_service.extract_from_text(
                 html_content, source_label="Email Body"
             )
+            extraction_time = time.perf_counter() - extraction_start
             extracted_list = self._gemini_invoices_to_raw(gemini_result)
+
+            # Extract token metadata
+            gemini_metadata = gemini_result.get("_gemini_metadata", {})
+            gemini_time = gemini_metadata.get("time_sec", 0)
+            gemini_total_tokens = gemini_metadata.get("total_tokens")
+            logger.info(f"[EMAIL BODY] Processing time: {time.perf_counter() - body_start_time:.2f} sec | Extraction time: {extraction_time:.2f} sec | Gemini time: {gemini_time:.2f} sec | Tokens: {gemini_total_tokens if gemini_total_tokens else 'unavailable'}")
+            if gemini_total_tokens:
+                result["gemini_tokens"] = gemini_total_tokens
+            result["extraction_time"] = extraction_time
 
             if not extracted_list:
                 result["error"] = "No data extracted from email body"
@@ -381,14 +445,22 @@ class InvoiceProcessor:
             # eligible for retry (e.g. after a bug fix).
             self._mark_document_processed(body_hash)
 
+            # Collect all valid invoices for bulk insert
+            invoices_to_store = []
             for extracted_data in extracted_list:
-                stored = self._finalize_and_store_invoice(extracted_data)
-                if stored is None:
-                    continue  # not likely an invoice, skip silently
+                invoice_dict = self._finalize_and_store_invoice(extracted_data)
+                if invoice_dict is not None:
+                    invoices_to_store.append(invoice_dict)
 
-                result["invoices_found"] += 1
-                if stored:
-                    result["invoices_stored"] += 1
+            result["invoices_found"] = len(invoices_to_store)
+
+            # Bulk insert all invoices in a single transaction
+            if invoices_to_store:
+                bulk_start = time.perf_counter()
+                stored_count, bulk_time = self.postgres_service.add_invoices_bulk(invoices_to_store)
+                result["invoices_stored"] = stored_count
+                result["db_time"] = bulk_time
+                logger.info(f"Bulk insert time: {bulk_time:.2f} sec for {stored_count} invoices")
 
             result["success"] = result["invoices_found"] > 0
             if result["success"]:
@@ -407,11 +479,11 @@ class InvoiceProcessor:
             result["error"] = error_msg
             return result
 
-    def _finalize_and_store_invoice(self, extracted_data: Dict[str, Any]) -> Optional[bool]:
-        """Validate, normalize, and store a single extracted invoice dict.
-        Returns True if stored, False if it looked like an invoice but
-        wasn't stored (insufficient data or a duplicate), or None if it
-        doesn't look like an invoice at all (caller should not count it)."""
+    def _finalize_and_store_invoice(self, extracted_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Validate and normalize a single extracted invoice dict.
+        Returns the normalized invoice dict if valid, None if not an invoice.
+        Storage is done separately via bulk insert.
+        """
         normalized_data = InvoiceValidator.validate_invoice_data(extracted_data)
         invoice = InvoiceRecord(**normalized_data)
 
@@ -421,20 +493,14 @@ class InvoiceProcessor:
 
         if not invoice.invoice_number and not invoice.invoice_amount:
             logger.info("Document lacks key invoice fields (no invoice number or invoice amount)")
-            return False
+            return None
 
-        # Invoice number (+ vendor name when known on both sides - see
-        # PostgresStorageService.check_duplicate) is the business identity.
-        # Source is deliberately NOT part of this check, so the same real
-        # invoice arriving as a PDF, a DOCX, an XLSX row, or in the email
-        # body is recognized as the same invoice rather than four separate
-        # ones. Records without an invoice number can't be deduplicated
-        # this way and are always stored.
+        # Check for duplicates
         if invoice.invoice_number and self.primary_storage.check_duplicate(invoice.invoice_number, invoice.vendor_name):
             logger.info(f"Skipping duplicate invoice: {invoice.invoice_number}")
-            return False
+            return None
 
-        return self.postgres_service.add_invoice(invoice.to_dict())
+        return invoice.to_dict()
 
     def _process_attachment(self, message_id: str, attachment: Dict[str, Any]) -> Dict[str, Any]:
         """Process a single attachment (may yield zero, one, or many invoices,
@@ -448,8 +514,13 @@ class InvoiceProcessor:
             "invoices_found": 0,
             "invoices_stored": 0,
             "duplicate": False,
-            "error": None
+            "error": None,
+            "gemini_tokens": 0,
+            "extraction_time": 0.0
         }
+
+        attachment_start_time = time.perf_counter()
+        extraction_time = 0.0
 
         try:
             if not InvoiceValidator.is_supported_file_type(filename, content_type):
@@ -458,7 +529,10 @@ class InvoiceProcessor:
                 return result
 
             logger.info(f"Downloading attachment: {filename}")
+            download_start = time.perf_counter()
             attachment_content = self.graph_service.download_attachment(message_id, attachment_id)
+            download_time = time.perf_counter() - download_start
+            logger.info(f"[GRAPH] Attachment download time: {download_time:.2f} sec")
 
             # Document-level duplicate check: has this EXACT file content
             # already been processed before (e.g. the same file forwarded
@@ -504,9 +578,21 @@ class InvoiceProcessor:
                 #     extracted_list = self.document_service.extract_invoices_from_text(
                 #         combined_text, filename, source="DOCX"
                 #     )
+                extraction_start = time.perf_counter()
                 gemini_result = self.document_service.extract_from_docx_bytes(
                     attachment_content, source_label="DOCX"
                 )
+                extraction_time = time.perf_counter() - extraction_start
+                extracted_list = self._gemini_invoices_to_raw(gemini_result)
+
+                # Extract token metadata
+                gemini_metadata = gemini_result.get("_gemini_metadata", {})
+                gemini_time = gemini_metadata.get("time_sec", 0)
+                gemini_total_tokens = gemini_metadata.get("total_tokens")
+                logger.info(f"[DOCX] {filename} | Processing time: {time.perf_counter() - attachment_start_time:.2f} sec | Extraction time: {extraction_time:.2f} sec | Gemini time: {gemini_time:.2f} sec | Tokens: {gemini_total_tokens if gemini_total_tokens else 'unavailable'}")
+                if gemini_total_tokens:
+                    result["gemini_tokens"] = gemini_total_tokens
+                result["extraction_time"] = extraction_time
 
             elif filename_lower.endswith(('.xlsx', '.xls')):
                 # Same idea for XLSX (openpyxl, not OCR).
@@ -534,9 +620,21 @@ class InvoiceProcessor:
                 #     extracted_list = self.document_service.extract_invoices_from_text(
                 #         combined_text, filename, source="XLSX"
                 #     )
+                extraction_start = time.perf_counter()
                 gemini_result = self.document_service.extract_from_xlsx_bytes(
                     attachment_content, source_label="XLSX"
                 )
+                extraction_time = time.perf_counter() - extraction_start
+                extracted_list = self._gemini_invoices_to_raw(gemini_result)
+
+                # Extract token metadata
+                gemini_metadata = gemini_result.get("_gemini_metadata", {})
+                gemini_time = gemini_metadata.get("time_sec", 0)
+                gemini_total_tokens = gemini_metadata.get("total_tokens")
+                logger.info(f"[XLSX] {filename} | Processing time: {time.perf_counter() - attachment_start_time:.2f} sec | Extraction time: {extraction_time:.2f} sec | Gemini time: {gemini_time:.2f} sec | Tokens: {gemini_total_tokens if gemini_total_tokens else 'unavailable'}")
+                if gemini_total_tokens:
+                    result["gemini_tokens"] = gemini_total_tokens
+                result["extraction_time"] = extraction_time
 
             else:
                 # PDF and images - sent directly to Gemini as bytes. Gemini's
@@ -574,11 +672,21 @@ class InvoiceProcessor:
                     source_label = "PDF"
                     mime_type = "application/pdf"
 
+                extraction_start = time.perf_counter()
                 gemini_result = self.document_service.extract_from_bytes(
                     gemini_input_content, mime_type=mime_type, source_label=source_label
                 )
+                extraction_time = time.perf_counter() - extraction_start
+                extracted_list = self._gemini_invoices_to_raw(gemini_result)
 
-            extracted_list = self._gemini_invoices_to_raw(gemini_result)
+                # Extract token metadata
+                gemini_metadata = gemini_result.get("_gemini_metadata", {})
+                gemini_time = gemini_metadata.get("time_sec", 0)
+                gemini_total_tokens = gemini_metadata.get("total_tokens")
+                logger.info(f"[PDF] {filename} | Processing time: {time.perf_counter() - attachment_start_time:.2f} sec | Extraction time: {extraction_time:.2f} sec | Gemini time: {gemini_time:.2f} sec | Tokens: {gemini_total_tokens if gemini_total_tokens else 'unavailable'}")
+                if gemini_total_tokens:
+                    result["gemini_tokens"] = gemini_total_tokens
+                result["extraction_time"] = extraction_time
 
             if not extracted_list:
                 result["error"] = "No data extracted"
@@ -591,14 +699,22 @@ class InvoiceProcessor:
             # eligible for retry (e.g. after a bug fix).
             self._mark_document_processed(attachment_hash)
 
+            # Collect all valid invoices for bulk insert
+            invoices_to_store = []
             for extracted_data in extracted_list:
-                stored = self._finalize_and_store_invoice(extracted_data)
-                if stored is None:
-                    continue  # not likely an invoice, skip silently
+                invoice_dict = self._finalize_and_store_invoice(extracted_data)
+                if invoice_dict is not None:
+                    invoices_to_store.append(invoice_dict)
 
-                result["invoices_found"] += 1
-                if stored:
-                    result["invoices_stored"] += 1
+            result["invoices_found"] = len(invoices_to_store)
+
+            # Bulk insert all invoices in a single transaction
+            if invoices_to_store:
+                bulk_start = time.perf_counter()
+                stored_count, bulk_time = self.postgres_service.add_invoices_bulk(invoices_to_store)
+                result["invoices_stored"] = stored_count
+                result["db_time"] = bulk_time
+                logger.info(f"Bulk insert time: {bulk_time:.2f} sec for {stored_count} invoices")
 
             result["success"] = result["invoices_found"] > 0
             if result["success"]:
