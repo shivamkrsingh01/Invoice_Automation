@@ -38,6 +38,7 @@ import logging
 import re
 import time
 from typing import Any, Dict, List, Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import fitz  # PyMuPDF - used only to split a very long PDF into page-range
              # chunks before sending it to Gemini; see extract_from_bytes, Tuple
@@ -99,7 +100,7 @@ EXTRACTION_INSTRUCTIONS = """Extract invoice data from business documents (email
 - utr_number: Bank UTR/transaction reference
 - total_payment: Batch/table total before deductions (if distinguished from invoice_amount)
 - total_net_payment: Final net amount after all deductions (labels: Net Payment, Net Payable, Net Amount Payable, Net Amount). Table-level figure. If no net figure printed, return null
-- vendor_name: Vendor/supplier name (issuer, not recipient)
+- vendor_name: Vendor/supplier name (issuer, not recipient) (labels: Vendor Name, Vendor, Beneficiary Name, Payee Name, Company, Seller, From)
 
 Rules:
 1. Return null if value not clearly present. Never guess, estimate, infer, or invent
@@ -241,7 +242,7 @@ class GeminiExtractionService:
 
         logger.info(
             f"{source_label}: {page_count} pages, splitting into {len(ranges)} "
-            f"chunks of up to {size} pages (one call each) instead of one call "
+            f"chunks of up to {size} pages (processing in parallel) instead of one call "
             f"for the whole document"
         )
 
@@ -253,45 +254,57 @@ class GeminiExtractionService:
         total_output_tokens = 0
         total_cached_tokens = 0
 
+        # Prepare all chunks first
+        chunks_to_process = []
         for i, (start, end) in enumerate(ranges, start=1):
             chunk_label = f"{source_label} (pages {start + 1}-{end + 1} of {page_count})"
             chunk_doc = fitz.open()
             chunk_doc.insert_pdf(src, from_page=start, to_page=end)
             chunk_bytes = chunk_doc.tobytes()
+            chunks_to_process.append((i, chunk_label, chunk_bytes, len(ranges)))
 
-            logger.info(f"Extracting chunk {i}/{len(ranges)}: {chunk_label}")
+        # Process chunks in parallel using ThreadPoolExecutor
+        max_workers = min(3, len(chunks_to_process))  # Limit to 3 parallel Gemini calls
+        logger.info(f"Processing {len(chunks_to_process)} chunks with {max_workers} parallel workers")
+
+        def process_chunk(chunk_data):
+            i, chunk_label, chunk_bytes, total_chunks = chunk_data
+            logger.info(f"Extracting chunk {i}/{total_chunks}: {chunk_label}")
             part = types.Part.from_bytes(data=chunk_bytes, mime_type="application/pdf")
             result = self._run_extraction(
                 contents=[part],
                 source_label=chunk_label,
                 email_timestamp=email_timestamp,
             )
-            # _run_extraction already raises on a chunk that fails after
-            # its own retries (including MAX_TOKENS) - nothing further to
-            # catch here; letting it propagate is the point (see docstring).
+            return i, chunk_label, result
 
-            # Aggregate token metadata across chunks
-            metadata = result.get("_gemini_metadata", {})
-            total_gemini_time += metadata.get("time_sec", 0)
-            if metadata.get("input_tokens") is not None:
-                total_input_tokens += metadata["input_tokens"]
-            if metadata.get("output_tokens") is not None:
-                total_output_tokens += metadata["output_tokens"]
-            if metadata.get("cached_tokens") is not None:
-                total_cached_tokens += metadata["cached_tokens"]
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(process_chunk, chunk): chunk for chunk in chunks_to_process}
+            for future in as_completed(futures):
+                i, chunk_label, result = future.result()
 
-            chunk_invoice_count = len(result["invoices"])
-            for inv in result["invoices"]:
-                key = self._norm_invoice_no(inv.get("invoice_number"))
-                if key and key in seen_invoice_keys:
-                    continue  # duplicate from the 1-page overlap - keep the earlier copy
-                if key:
-                    seen_invoice_keys.add(key)
-                all_invoices.append(inv)
-            logger.info(
-                f"Chunk {i}/{len(ranges)} ({chunk_label}): {chunk_invoice_count} invoice(s) "
-                f"({len(all_invoices)} total so far after de-duplication)"
-            )
+                # Aggregate token metadata across chunks
+                metadata = result.get("_gemini_metadata", {})
+                total_gemini_time += metadata.get("time_sec", 0)
+                if metadata.get("input_tokens") is not None:
+                    total_input_tokens += metadata["input_tokens"]
+                if metadata.get("output_tokens") is not None:
+                    total_output_tokens += metadata["output_tokens"]
+                if metadata.get("cached_tokens") is not None:
+                    total_cached_tokens += metadata["cached_tokens"]
+
+                chunk_invoice_count = len(result["invoices"])
+                for inv in result["invoices"]:
+                    key = self._norm_invoice_no(inv.get("invoice_number"))
+                    if key and key in seen_invoice_keys:
+                        continue  # duplicate from the 1-page overlap - keep the earlier copy
+                    if key:
+                        seen_invoice_keys.add(key)
+                    all_invoices.append(inv)
+                logger.info(
+                    f"Chunk {i}/{len(ranges)} ({chunk_label}): {chunk_invoice_count} invoice(s) "
+                    f"({len(all_invoices)} total so far after de-duplication)"
+                )
 
         logger.info(
             f"{source_label}: all {len(ranges)} chunks extracted successfully, "
@@ -549,21 +562,7 @@ class GeminiExtractionService:
             if batch.total_net_payment is not None:
                 inv["total_net_payment"] = batch.total_net_payment
 
-        # Sanity log: a batch's rows should roughly add up to its total.
-        # Informational only - deductions legitimately make them differ.
-        for idx, batch in enumerate(batches):
-            members = [i for i in invoices
-                       if owner.get(cls._norm_invoice_no(i.get("invoice_number"))) == idx]
-            amounts = [i.get("invoice_amount") for i in members]
-            if batch.total_payment is None or not members or any(a is None for a in amounts):
-                continue
-            row_sum = sum(amounts)
-            if abs(row_sum - batch.total_payment) > 1.0:
-                logger.info(
-                    f"Payment batch {batch.utr_number}: rows sum to {row_sum:.2f} "
-                    f"but total_payment is {batch.total_payment:.2f} "
-                    f"(may be normal if deductions apply)"
-                )
+
 
     @staticmethod
     def _docx_to_text(content: bytes) -> str:

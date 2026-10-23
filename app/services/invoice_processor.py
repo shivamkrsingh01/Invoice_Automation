@@ -495,11 +495,7 @@ class InvoiceProcessor:
             logger.info("Document lacks key invoice fields (no invoice number or invoice amount)")
             return None
 
-        # Check for duplicates
-        if invoice.invoice_number and self.primary_storage.check_duplicate(invoice.invoice_number, invoice.vendor_name):
-            logger.info(f"Skipping duplicate invoice: {invoice.invoice_number}")
-            return None
-
+        # Duplicate checking is now done in batch before bulk insert
         return invoice.to_dict()
 
     def _process_attachment(self, message_id: str, attachment: Dict[str, Any]) -> Dict[str, Any]:
@@ -707,6 +703,23 @@ class InvoiceProcessor:
                     invoices_to_store.append(invoice_dict)
 
             result["invoices_found"] = len(invoices_to_store)
+
+            # Batch duplicate check - filter out duplicates before insert
+            if invoices_to_store:
+                duplicate_check_start = time.perf_counter()
+                duplicate_invoice_numbers = self.primary_storage.check_duplicates_batch(invoices_to_store)
+                duplicate_check_time = time.perf_counter() - duplicate_check_start
+                logger.info(f"Batch duplicate check time: {duplicate_check_time:.2f} sec")
+                
+                # Filter out duplicates
+                invoices_to_store = [
+                    inv for inv in invoices_to_store 
+                    if inv.get('invoice_number') not in duplicate_invoice_numbers
+                ]
+                
+                if len(invoices_to_store) < result["invoices_found"]:
+                    skipped_count = result["invoices_found"] - len(invoices_to_store)
+                    logger.info(f"Skipped {skipped_count} duplicate invoice(s) from batch check")
 
             # Bulk insert all invoices in a single transaction
             if invoices_to_store:

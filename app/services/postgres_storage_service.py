@@ -108,8 +108,8 @@ class PostgresStorageService:
             self.pool = ConnectionPool(
                 conninfo=conninfo,
                 kwargs={"password": settings.postgres_password},
-                min_size=1,
-                max_size=5,
+                min_size=2,
+                max_size=15,
                 open=True,
             )
             self._initialize_schema()
@@ -237,6 +237,47 @@ class PostgresStorageService:
             return True
 
         return False
+
+    def check_duplicates_batch(self, invoices_data: List[Dict[str, Any]]) -> set:
+        """Batch duplicate check - checks multiple invoice numbers in a single query.
+        
+        Returns a set of invoice numbers that are duplicates (based on invoice_number only).
+        This is much faster than calling check_duplicate() individually for each invoice.
+        
+        Args:
+            invoices_data: List of invoice dictionaries (must contain 'invoice_number' key)
+            
+        Returns:
+            Set of invoice numbers that already exist in the database
+        """
+        if not invoices_data:
+            return set()
+
+        # Extract invoice numbers that are not None
+        invoice_numbers = set()
+        for inv in invoices_data:
+            inv_num = inv.get('invoice_number')
+            if inv_num:
+                invoice_numbers.add(inv_num)
+
+        if not invoice_numbers:
+            return set()
+
+        try:
+            with self.pool.connection() as conn:
+                with conn.cursor() as cur:
+                    # Single query to check all invoice numbers at once
+                    placeholders = ', '.join(['%s'] * len(invoice_numbers))
+                    cur.execute(
+                        f"SELECT DISTINCT invoice_number FROM invoices WHERE invoice_number IN ({placeholders})",
+                        list(invoice_numbers)
+                    )
+                    duplicate_numbers = {row[0] for row in cur.fetchall()}
+            logger.info(f"Batch duplicate check: {len(duplicate_numbers)} duplicates found out of {len(invoice_numbers)} checked")
+            return duplicate_numbers
+        except psycopg.Error as e:
+            logger.error(f"Failed to batch check duplicates in PostgreSQL: {str(e)}")
+            return set()
 
     # Document-level duplicate detection (a real DB constraint, unlike the
 
